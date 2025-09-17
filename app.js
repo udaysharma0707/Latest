@@ -1,66 +1,22 @@
-// app.js (updated flush logic — keep rest of your original file as-is)
-const ENDPOINT = "https://script.google.com/macros/s/AKfycbzDBpNS5yhyPyGY-ibE8x43tc35Q2Z-EYKsop7kyfKqvV7Dyga5v4qV2YY4kTNGKZZjfw/exec";
+// app.js — online-only mode (no offline queue, sync button removed)
+const ENDPOINT = "https://script.google.com/macros/s/AKfycbwyBqXdqrjtPUmkJETwPzTN6nCfc0J7xhiDVPdDAv61bKzoZk0JAK3Tqfm-5pl4VvC_/exec";
 const SHARED_TOKEN = "shopSecret2025";
-const KEY_QUEUE = "car_entry_queue_v1";
 
 // Tunables
-const MAX_CONCURRENT = 2;         // how many JSONP sends in parallel
-const FLUSH_INTERVAL_MS = 3000;   // auto-flush interval while online (ms)
-const JSONP_TIMEOUT_MS = 40000;   // JSONP timeout
-const MAX_RETRY = 6;              // after these many attempts, stop auto-retrying and alert user
+const JSONP_TIMEOUT_MS = 20000;   // JSONP timeout
 
 // runtime
 const activeSubmissions = new Set(); // submissionIds being processed
-let flushIntervalId = null;
 
 // ---------- helpers ----------
 function updateStatus() {
   const s = document.getElementById('status');
   if (s) s.textContent = navigator.onLine ? 'online' : 'offline';
-  // queue count
-  const qCountEl = document.getElementById('queueCount');
-  if (qCountEl) qCountEl.textContent = getQueue().length || 0;
-  console.log('[STATUS]', navigator.onLine ? 'online' : 'offline', 'queue=', getQueue().length);
+  console.log('[STATUS]', navigator.onLine ? 'online' : 'offline');
 }
-window.addEventListener('online', ()=>{ updateStatus(); startAutoFlush(); flushOnce(); });
-window.addEventListener('offline', ()=>{ updateStatus(); stopAutoFlush(); });
-
-// queue helpers (backwards-compatible)
-function getQueue(){
-  try {
-    const raw = localStorage.getItem(KEY_QUEUE) || "[]";
-    const arr = JSON.parse(raw);
-    // Normalize items: ensure id, ts, data, retryCount
-    return arr.map(item => {
-      if (!item) return null;
-      if (item.id && item.data) {
-        item.retryCount = item.retryCount || 0;
-        return item;
-      }
-      // older format: {ts:..., data:...} -> ensure id
-      if (item.data && item.data.submissionId) return { id: item.data.submissionId, ts: item.ts || Date.now(), data: item.data, retryCount: item.retryCount || 0 };
-      // fallback: create id
-      const gen = ("s_" + (item.ts || Date.now()) + "_" + Math.floor(Math.random()*1000000));
-      return { id: gen, ts: item.ts || Date.now(), data: item.data || item, retryCount: item.retryCount || 0 };
-    }).filter(Boolean);
-  } catch(e){
-    console.warn('queue parse err', e);
-    return [];
-  }
-}
-function setQueue(q){ localStorage.setItem(KEY_QUEUE, JSON.stringify(q)); updateStatus(); }
-
-function pushToQueueItem(item){
-  const q = getQueue();
-  q.push(item);
-  setQueue(q);
-}
-
-function removeFromQueueById(id){
-  let q = getQueue();
-  q = q.filter(it => !(it && it.id === id));
-  setQueue(q);
-}
+// only show status, do not try to auto-flush/queue
+window.addEventListener('online', ()=>{ updateStatus(); });
+window.addEventListener('offline', ()=>{ updateStatus(); });
 
 // Uppercase except services (do not touch services array)
 function uppercaseExceptServices(fd) {
@@ -161,137 +117,6 @@ function sendToServerJSONP(formData, clientTs) {
   return jsonpRequest(url, JSONP_TIMEOUT_MS);
 }
 
-// queue an item — avoid duplicates by submissionId
-function queueSubmission(formData){
-  var q = getQueue();
-  var id = formData.submissionId || ("s_" + Date.now() + "_" + Math.floor(Math.random()*1000000));
-  // if already present, don't add again
-  if (q.some(it => it && it.id === id)) {
-    console.log('[QUEUE] submission already queued, id=', id);
-    return;
-  }
-  q.push({ id: id, ts: Date.now(), data: formData, retryCount: 0 });
-  setQueue(q);
-  console.log('[QUEUE] queued, length=', getQueue().length, 'id=', id);
-}
-
-// ---------- Flush logic (concurrent, safe) ----------
-/*
-  flushOnce() picks up to MAX_CONCURRENT items from queue and attempts to send them in parallel.
-  Successful items are removed. Failed items increment retryCount and remain for later tries.
-*/
-async function flushOnce() {
-  if (!navigator.onLine) return;
-  let q = getQueue();
-  if (!q || q.length === 0) { console.log('[FLUSH] nothing to flush'); return; }
-  // build batch: oldest-first up to MAX_CONCURRENT and skip in-flight ones
-  const batch = [];
-  for (let i = 0; i < q.length && batch.length < MAX_CONCURRENT; i++) {
-    const it = q[i];
-    if (!it || !it.id || !it.data) continue;
-    if (activeSubmissions.has(it.id)) continue;
-    batch.push(it);
-  }
-  if (batch.length === 0) { console.log('[FLUSH] no eligible items (all in-flight)'); return; }
-
-  console.log('[FLUSH] sending batch size=', batch.length);
-  // mark active
-  batch.forEach(it => activeSubmissions.add(it.id));
-
-  // For each batch item, create a promise that always resolves to an object with id + result.
-  // This guarantees Promise.all won't reject; we can map results reliably.
-  const mappedPromises = batch.map(it => {
-    return sendToServerJSONP(it.data, it.ts)
-      .then(resp => ({ id: it.id, success: !!(resp && resp.success), resp: resp }))
-      .catch(err => ({ id: it.id, error: err }));
-  });
-
-  // Wait for all mapped results (they resolve to objects even when send fails)
-  const results = await Promise.all(mappedPromises);
-
-  // Process each result and ensure we unmark active for that id
-  for (const r of results) {
-    const id = r && r.id;
-    try {
-      if (r.success) {
-        // remove from queue only if server confirmed success
-        removeFromQueueById(id);
-        console.log('[FLUSH] success id=', id, r.resp);
-        if (r.resp && r.resp.serial) showMessage('Saved — Serial: ' + r.resp.serial);
-      } else {
-        // not a success — maybe server returned error or we had a network error
-        if (r.resp && r.resp.error) {
-          // Server rejected the entry (validation). Remove from queue and inform user.
-          removeFromQueueById(id);
-          alert('Server rejected an offline entry and it was removed: ' + r.resp.error);
-        } else {
-          // temporary failure -> increment retryCount and keep item in queue
-          console.warn('[FLUSH] temporary failure for id=', id, 'resp/error=', r.resp || r.error);
-          incrementRetryCount(id);
-        }
-      }
-    } catch (procErr) {
-      console.error('[FLUSH] processing error for id=' + id, procErr);
-      // do not remove queue item here — leave for retry
-      incrementRetryCount(id);
-    } finally {
-      // ensure active mark cleared
-      try { activeSubmissions.delete(id); } catch(e){}
-    }
-  }
-
-  updateStatus();
-}
-
-function incrementRetryCount(id){
-  let q = getQueue();
-  for (let i=0;i<q.length;i++){
-    if (q[i].id === id) {
-      q[i].retryCount = (q[i].retryCount || 0) + 1;
-      if (q[i].retryCount >= MAX_RETRY) {
-        // stop auto retrying and alert user for manual action
-        alert('An offline entry failed to sync after multiple attempts. You may inspect and re-submit. id=' + id);
-        // We keep it in queue (so the user can manually retry or inspect).
-      }
-      break;
-    }
-  }
-  setQueue(q);
-}
-
-// start/stop auto flush loop
-function startAutoFlush(){
-  if (flushIntervalId) return;
-  flushIntervalId = setInterval(function(){
-    try { if (navigator.onLine) flushOnce(); } catch(e){ console.warn('auto flush err', e); }
-  }, FLUSH_INTERVAL_MS);
-}
-function stopAutoFlush(){
-  if (!flushIntervalId) return;
-  clearInterval(flushIntervalId); flushIntervalId = null;
-}
-
-// expose manual sync for button
-async function manualSyncNow(){
-  if (!navigator.onLine) { alert('You are offline. Connect to network and try again.'); return; }
-  showMessage('Syncing queued entries...');
-  // run flushUntilEmpty but guard loops
-  const MAX_RUNS = 8;
-  for (let i=0;i<MAX_RUNS;i++){
-    await flushOnce();
-    const remaining = getQueue().length;
-    if (!remaining) break;
-    // small delay to let server settle
-    await new Promise(r=>setTimeout(r, 300));
-  }
-  const rem = getQueue().length;
-  if (rem === 0) showMessage('All queued entries synced.');
-  else showMessage('Sync attempted. Remaining: ' + rem);
-}
-
-// convenience alias used by HTML
-window.syncNow = manualSyncNow;
-
 // collect data from DOM
 function collectFormData(){
   var services = Array.from(document.querySelectorAll('.service:checked')).map(i=>i.value);
@@ -305,8 +130,7 @@ function collectFormData(){
     modeOfPayment: mode,
     kmsTravelled: document.getElementById('kmsTravelled').value,
     adviceToCustomer: document.getElementById('adviceToCustomer').value.trim(),
-    otherInfo: document.getElementById('otherInfo').value.trim(),
-    addIfMissing: document.getElementById('addIfMissing') ? document.getElementById('addIfMissing').checked : false
+    otherInfo: document.getElementById('otherInfo').value.trim()
   };
 }
 
@@ -327,7 +151,6 @@ function clearForm(){
     document.getElementById('kmsTravelled').value='';
     document.getElementById('adviceToCustomer').value='';
     document.getElementById('otherInfo').value='';
-    if (document.getElementById('addIfMissing')) document.getElementById('addIfMissing').checked=false;
   } catch(e){ console.warn('clearForm error', e); }
 }
 
@@ -338,30 +161,22 @@ function makeSubmissionId() {
 
 // Expose submitForm global so index.html's inline call works
 window.submitForm = async function() {
-  // call the same internal flow as click/touch handlers
   const btn = document.getElementById('submitBtn');
-  if (btn) {
-    // trigger the click handler we attach below
-    btn.click();
-  } else {
-    // fallback: run flow
-    await doSubmitFlow();
-  }
+  if (btn) btn.click();
+  else await doSubmitFlow();
 };
 
-// ---------- DOM bindings (safe for mobile) ----------
+// ---------- DOM bindings (online-only) ----------
 document.addEventListener('DOMContentLoaded', function() {
   updateStatus();
-  startAutoFlush();
 
   const submitBtn = document.getElementById('submitBtn');
   const clearBtn = document.getElementById('clearBtn');
-  // new sync button
   const syncBtn  = document.getElementById('syncBtn');
 
+  // remove/hide sync button if present (sync not supported anymore)
   if (syncBtn) {
-    syncBtn.addEventListener('click', function(){ window.syncNow(); });
-    syncBtn.addEventListener('touchend', function(ev){ ev && ev.preventDefault(); window.syncNow(); }, { passive:false });
+    try { syncBtn.style.display = 'none'; syncBtn.remove(); } catch(e){ /* ignore */ }
   }
 
   if (!submitBtn) {
@@ -377,6 +192,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function doSubmitFlow() {
     try {
+      // REQUIRE online
+      if (!navigator.onLine) {
+        alert('Please connect to internet — this app requires an internet connection to submit.');
+        return;
+      }
+
       // Basic client validation
       var carRegEl = document.getElementById('carRegistrationNo');
       var carReg = carRegEl ? carRegEl.value.trim() : "";
@@ -393,7 +214,7 @@ document.addEventListener('DOMContentLoaded', function() {
       // collect
       var formData = collectFormData();
 
-      // assign a submissionId (if not already present)
+      // assign a submissionId
       if (!formData.submissionId) formData.submissionId = makeSubmissionId();
 
       // if this id is already active (somehow), stop
@@ -417,55 +238,34 @@ document.addEventListener('DOMContentLoaded', function() {
       submitBtn.textContent = 'Saving...';
 
       // clear UI immediately
-      showMessage('Submitted — registering...');
+      showMessage('Submitting — please wait...');
       clearForm();
 
-      // background send
+      // background send (online-only)
       (async function backgroundSend(localForm) {
         try {
-          if (navigator.onLine) {
-            // flush queued first (best-effort)
-            try { await flushOnce(); } catch(e){ console.warn('flushOnce err', e); }
-
-            // Try send current item
-            try {
-              const clientTs = Date.now();
-              const resp = await sendToServerJSONP(localForm, clientTs);
-              if (resp && resp.success) {
-                showMessage('Saved — Serial: ' + resp.serial);
-                // ensure item is not in queue (cleanup)
-                try {
-                  let q = getQueue();
-                  q = q.filter(it => !(it && it.id === localForm.submissionId));
-                  setQueue(q);
-                } catch(e) { console.warn('cleanup queue err', e); }
-              } else if (resp && resp.error) {
-                // server validation error -> do NOT queue; inform user
-                showMessage('Server rejected: ' + resp.error);
-                console.warn('Server rejected:', resp.error);
-              } else {
-                // unknown -> queue
-                queueSubmission(localForm);
-                showMessage('Saved locally (server busy). Will sync later.');
-              }
-            } catch (errSend) {
-              // network/JSONP error -> queue locally
-              console.warn('send failed -> queueing', errSend);
-              queueSubmission(localForm);
-              showMessage('Network error — saved locally.');
+          // Attempt send current item
+          const clientTs = Date.now();
+          try {
+            const resp = await sendToServerJSONP(localForm, clientTs);
+            if (resp && resp.success) {
+              showMessage('Saved — Serial: ' + resp.serial);
+            } else if (resp && resp.error) {
+              // server validation error -> inform user, don't auto-queue
+              alert('Server rejected submission: ' + resp.error);
+            } else {
+              // unknown server response
+              alert('Unexpected server response. Please retry while online.');
             }
-
-            // attempt another flush (best-effort)
-            try { await flushOnce(); } catch(e){}
-          } else {
-            // offline -> queue locally
-            queueSubmission(localForm);
-            showMessage('Offline — saved locally and will sync when online.');
+          } catch (errSend) {
+            // network/JSONP error -> inform user, do NOT save locally
+            console.error('send failed', errSend);
+            alert('Submission failed. Ensure you have a working internet connection and try again.');
           }
+
         } catch (bgErr) {
           console.error('backgroundSend unexpected', bgErr);
-          try { queueSubmission(localForm); } catch(e){}
-          showMessage('Error occurred — saved locally.');
+          alert('Unexpected error occurred. Please retry.');
         } finally {
           // done processing this id
           try { activeSubmissions.delete(localForm.submissionId); } catch(e){}
@@ -477,7 +277,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     } catch (ex) {
       console.error('submit handler exception', ex);
-      showMessage('Unexpected error. Try again.');
+      alert('Unexpected error. Try again.');
       submitBtn.disabled = false; submitBtn.textContent = 'Submit';
     }
   }
@@ -522,4 +322,3 @@ document.addEventListener('DOMContentLoaded', function() {
   }, 300);
 
 }); // DOMContentLoaded end
-
