@@ -1,12 +1,12 @@
 // app.js (updated flush logic — keep rest of your original file as-is)
-const ENDPOINT = "https://script.google.com/macros/s/AKfycbwyBqXdqrjtPUmkJETwPzTN6nCfc0J7xhiDVPdDAv61bKzoZk0JAK3Tqfm-5pl4VvC_/exec";
+const ENDPOINT = "https://script.google.com/macros/s/AKfycbzDBpNS5yhyPyGY-ibE8x43tc35Q2Z-EYKsop7kyfKqvV7Dyga5v4qV2YY4kTNGKZZjfw/exec";
 const SHARED_TOKEN = "shopSecret2025";
 const KEY_QUEUE = "car_entry_queue_v1";
 
 // Tunables
-const MAX_CONCURRENT = 4;         // how many JSONP sends in parallel
+const MAX_CONCURRENT = 2;         // how many JSONP sends in parallel
 const FLUSH_INTERVAL_MS = 3000;   // auto-flush interval while online (ms)
-const JSONP_TIMEOUT_MS = 20000;   // JSONP timeout
+const JSONP_TIMEOUT_MS = 40000;   // JSONP timeout
 const MAX_RETRY = 6;              // after these many attempts, stop auto-retrying and alert user
 
 // runtime
@@ -522,3 +522,4 @@ document.addEventListener('DOMContentLoaded', function() {
   }, 300);
 
 }); // DOMContentLoaded end
+
