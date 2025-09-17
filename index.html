@@ -146,11 +146,19 @@
     <label class="q-label">9. Any Other Information</label>
     <textarea id="otherInfo" rows="2"></textarea>
 
-    <div class="form-actions">
+       <div class="form-actions">
       <button id="submitBtn" type="button">Submit</button>
       <button id="clearBtn" type="button">Clear</button>
-      <div style="margin-left:auto;font-weight:600;"><span id="status">online</span></div>
+
+      <!-- Manual sync + queue count -->
+      <button id="syncBtn" type="button" style="background:#28a745;">Sync Now</button>
+      <div style="margin-left:auto;font-weight:600; display:flex; gap:8px; align-items:center;">
+        <div>Online:</div>
+        <div id="status">online</div>
+        <div style="margin-left:8px;">Queued: <span id="queueCount">0</span></div>
+      </div>
     </div>
+
 
     <div id="msg" style="display:none"></div>
     <div class="small" style="margin-top:6px">Status: <span id="status-duplicate" style="display:none"></span></div>
@@ -193,3 +201,4 @@
   </script>
 </body>
 </html>
+
