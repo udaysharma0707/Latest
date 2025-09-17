@@ -1,43 +1,67 @@
-
-// app.js - improved mobile-friendly client with JSONP queue & background send
+// app.js - improved mobile-friendly client with JSONP queue, background send, manual sync, concurrency
 // IMPORTANT: set ENDPOINT to your Apps Script web app URL and SHARED_TOKEN to the secret above
 const ENDPOINT = "https://script.google.com/macros/s/AKfycbzUKjIGEdy_n98Iw4iUIevCfEmkhsZldxU8SKE1TXqblxh3R2ETlcX-fewaKebln6BJcQ/exec";
 const SHARED_TOKEN = "shopSecret2025";
 const KEY_QUEUE = "car_entry_queue_v1";
 
-// ---------- runtime state for dedupe ----------
-const activeSubmissions = new Set(); // submissionIds currently being processed
+// Tunables
+const MAX_CONCURRENT = 4;         // how many JSONP sends in parallel
+const FLUSH_INTERVAL_MS = 3000;   // auto-flush interval while online (ms)
+const JSONP_TIMEOUT_MS = 20000;   // JSONP timeout
+const MAX_RETRY = 6;              // after these many attempts, stop auto-retrying and alert user
+
+// runtime
+const activeSubmissions = new Set(); // submissionIds being processed
+let flushIntervalId = null;
 
 // ---------- helpers ----------
 function updateStatus() {
   const s = document.getElementById('status');
   if (s) s.textContent = navigator.onLine ? 'online' : 'offline';
-  console.log('[STATUS]', navigator.onLine ? 'online' : 'offline');
+  // queue count
+  const qCountEl = document.getElementById('queueCount');
+  if (qCountEl) qCountEl.textContent = getQueue().length || 0;
+  console.log('[STATUS]', navigator.onLine ? 'online' : 'offline', 'queue=', getQueue().length);
 }
-window.addEventListener('online', ()=>{ updateStatus(); flushQueue(); });
-window.addEventListener('offline', ()=>{ updateStatus(); });
+window.addEventListener('online', ()=>{ updateStatus(); startAutoFlush(); flushOnce(); });
+window.addEventListener('offline', ()=>{ updateStatus(); stopAutoFlush(); });
 
 // queue helpers (backwards-compatible)
 function getQueue(){
   try {
     const raw = localStorage.getItem(KEY_QUEUE) || "[]";
     const arr = JSON.parse(raw);
-    // Normalize any old-format items (data-only) to have id
+    // Normalize items: ensure id, ts, data, retryCount
     return arr.map(item => {
       if (!item) return null;
-      if (item.id) return item;
-      // older format: {ts:..., data:...} -> ensure id exists
-      if (item.data && item.data.submissionId) return { id: item.data.submissionId, ts: item.ts, data: item.data };
+      if (item.id && item.data) {
+        item.retryCount = item.retryCount || 0;
+        return item;
+      }
+      // older format: {ts:..., data:...} -> ensure id
+      if (item.data && item.data.submissionId) return { id: item.data.submissionId, ts: item.ts || Date.now(), data: item.data, retryCount: item.retryCount || 0 };
       // fallback: create id
       const gen = ("s_" + (item.ts || Date.now()) + "_" + Math.floor(Math.random()*1000000));
-      return { id: gen, ts: item.ts || Date.now(), data: item.data || {} };
+      return { id: gen, ts: item.ts || Date.now(), data: item.data || item, retryCount: item.retryCount || 0 };
     }).filter(Boolean);
   } catch(e){
     console.warn('queue parse err', e);
     return [];
   }
 }
-function setQueue(q){ localStorage.setItem(KEY_QUEUE, JSON.stringify(q)); }
+function setQueue(q){ localStorage.setItem(KEY_QUEUE, JSON.stringify(q)); updateStatus(); }
+
+function pushToQueueItem(item){
+  const q = getQueue();
+  q.push(item);
+  setQueue(q);
+}
+
+function removeFromQueueById(id){
+  let q = getQueue();
+  q = q.filter(it => !(it && it.id === id));
+  setQueue(q);
+}
 
 // Uppercase except services (do not touch services array)
 function uppercaseExceptServices(fd) {
@@ -80,9 +104,9 @@ function formatCarRegistration(raw) {
   return s;
 }
 
-// JSONP helper
+// JSONP helper (returns Promise)
 function jsonpRequest(url, timeoutMs) {
-  timeoutMs = timeoutMs || 15000;
+  timeoutMs = timeoutMs || JSONP_TIMEOUT_MS;
   return new Promise(function(resolve, reject) {
     var cbName = "jsonp_cb_" + Date.now() + "_" + Math.floor(Math.random()*100000);
     window[cbName] = function(data) {
@@ -112,7 +136,7 @@ function jsonpRequest(url, timeoutMs) {
   });
 }
 
-// Build JSONP URL and call — now includes submissionId
+// Build JSONP URL and call — includes both submissionId and clientId for server compatibility
 function sendToServerJSONP(formData, clientTs) {
   var params = [];
   function add(k,v){ if (v === undefined || v === null) v=""; params.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(v))); }
@@ -128,14 +152,14 @@ function sendToServerJSONP(formData, clientTs) {
   add("kmsTravelled", formData.kmsTravelled || "");
   add("adviceToCustomer", formData.adviceToCustomer || "");
   add("otherInfo", formData.otherInfo || "");
-  // include submissionId for server-side dedupe
-  if (formData.submissionId) add("submissionId", formData.submissionId);
+  // include submissionId for server-side dedupe, also include clientId (server expects clientId)
+  if (formData.submissionId) { add("submissionId", formData.submissionId); add("clientId", formData.submissionId); }
   if (clientTs) add("clientTs", String(clientTs));
 
   var base = ENDPOINT;
   var url = base + (base.indexOf('?') === -1 ? '?' : '&') + params.join("&");
   if (url.length > 1900) return Promise.reject(new Error("Payload too large for JSONP"));
-  return jsonpRequest(url, 20000);
+  return jsonpRequest(url, JSONP_TIMEOUT_MS);
 }
 
 // queue an item — avoid duplicates by submissionId
@@ -147,58 +171,129 @@ function queueSubmission(formData){
     console.log('[QUEUE] submission already queued, id=', id);
     return;
   }
-  q.push({ id: id, ts: Date.now(), data: formData });
+  q.push({ id: id, ts: Date.now(), data: formData, retryCount: 0 });
   setQueue(q);
   console.log('[QUEUE] queued, length=', getQueue().length, 'id=', id);
 }
 
-// flushQueue: sequentially send oldest-first (respects submissionId)
-async function flushQueue() {
+// ---------- Flush logic (concurrent, safe) ----------
+/*
+  flushOnce() picks up to MAX_CONCURRENT items from queue and attempts to send them in parallel.
+  Successful items are removed. Failed items increment retryCount and remain for later tries.
+*/
+async function flushOnce() {
   if (!navigator.onLine) return;
-  var q = getQueue();
-  if (!q || q.length === 0) { console.log('[FLUSH] queue empty'); return; }
-  console.log('[FLUSH] starting, len=', q.length);
-  var submitBtnEl = document.getElementById('submitBtn');
-  if (submitBtnEl) submitBtnEl.disabled = true;
-  while (q.length > 0 && navigator.onLine) {
-    var item = q[0];
-    // guard: if item missing, shift
-    if (!item || !item.data) { q.shift(); setQueue(q); q = getQueue(); continue; }
-    // if this submission is currently active (in-flight elsewhere), skip it for now
-    if (item.id && activeSubmissions.has(item.id)) {
-      console.log('[FLUSH] skipping in-flight id=', item.id);
-      // move to next (we'll retry later)
-      break;
-    }
-    try {
-      // mark active
-      if (item.id) activeSubmissions.add(item.id);
-      var resp = await sendToServerJSONP(item.data, item.ts);
-      console.log('[FLUSH] resp', resp);
-      if (resp && resp.success) {
-        // remove from queue only on success
-        q.shift(); setQueue(q);
-        // remove from active
-        if (item.id) activeSubmissions.delete(item.id);
-        await new Promise(r=>setTimeout(r,120));
-      } else {
-        // server returned validation error => remove from queue? No — better to alert user and stop
-        if (resp && resp.error) { alert("Server error during flush: " + resp.error); break; }
-        // unknown failure -> break and try later
-        if (item.id) activeSubmissions.delete(item.id);
-        break;
-      }
-    } catch (err) {
-      console.warn('[FLUSH] error', err);
-      // send failed -> ensure not marked active, and break to try later
-      if (item.id) activeSubmissions.delete(item.id);
-      break;
-    }
-    q = getQueue();
+  let q = getQueue();
+  if (!q || q.length === 0) { console.log('[FLUSH] nothing to flush'); return; }
+  // build batch: oldest-first up to MAX_CONCURRENT and skip in-flight ones
+  const batch = [];
+  for (let i = 0; i < q.length && batch.length < MAX_CONCURRENT; i++) {
+    const it = q[i];
+    if (!it || !it.id || !it.data) continue;
+    if (activeSubmissions.has(it.id)) continue;
+    batch.push(it);
   }
-  if (submitBtnEl) submitBtnEl.disabled = false;
-  console.log('[FLUSH] finished, remaining=', getQueue().length);
+  if (batch.length === 0) { console.log('[FLUSH] no eligible items (all in-flight)'); return; }
+
+  console.log('[FLUSH] sending batch size=', batch.length);
+  // mark active
+  batch.forEach(it => activeSubmissions.add(it.id));
+
+  // send in parallel
+  const promises = batch.map(it => {
+    return sendToServerJSONP(it.data, it.ts)
+      .then(resp => ({ id: it.id, success: !!(resp && resp.success), resp: resp }))
+      .catch(err => ({ id: it.id, error: err }));
+  });
+
+  const results = await Promise.allSettled(promises);
+  // process results
+  for (const p of results) {
+    if (p.status === 'fulfilled') {
+      const r = p.value;
+      if (r.success) {
+        // remove from queue
+        removeFromQueueById(r.id);
+        console.log('[FLUSH] success id=', r.id, r.resp);
+        // notify user briefly
+        if (r.resp && r.resp.serial) showMessage('Saved — Serial: ' + r.resp.serial);
+      } else {
+        // server-side returned validation error or unknown structure
+        if (r.resp && r.resp.error) {
+          // remove from queue (server rejected) and inform user
+          removeFromQueueById(r.id);
+          alert('Server rejected an offline entry and it was removed: ' + r.resp.error);
+        } else {
+          // treat as temporary failure -> increment retryCount
+          incrementRetryCount(r.id);
+          console.warn('[FLUSH] response indicates failure, will retry later id=', r.id, r.resp);
+        }
+      }
+    } else {
+      // promise rejected
+      const obj = p.reason || {};
+      if (obj && obj.id) {
+        incrementRetryCount(obj.id);
+      } else {
+        // can't map, just log
+        console.warn('[FLUSH] send failed (unmapped)', p.reason);
+      }
+    }
+    // unmark active for that id
+    try { activeSubmissions.delete(p.value && p.value.id ? p.value.id : (p.reason && p.reason.id ? p.reason.id : null)); } catch(e){}
+  }
+
+  updateStatus();
 }
+
+function incrementRetryCount(id){
+  let q = getQueue();
+  for (let i=0;i<q.length;i++){
+    if (q[i].id === id) {
+      q[i].retryCount = (q[i].retryCount || 0) + 1;
+      if (q[i].retryCount >= MAX_RETRY) {
+        // stop auto retrying and alert user for manual action
+        alert('An offline entry failed to sync after multiple attempts. You may inspect and re-submit. id=' + id);
+        // optionally keep it in queue for manual retry, or move it to a "dead" area — for now we keep it but don't auto-flush further until manual
+      }
+      break;
+    }
+  }
+  setQueue(q);
+}
+
+// start/stop auto flush loop
+function startAutoFlush(){
+  if (flushIntervalId) return;
+  flushIntervalId = setInterval(function(){
+    try { if (navigator.onLine) flushOnce(); } catch(e){ console.warn('auto flush err', e); }
+  }, FLUSH_INTERVAL_MS);
+}
+function stopAutoFlush(){
+  if (!flushIntervalId) return;
+  clearInterval(flushIntervalId); flushIntervalId = null;
+}
+
+// expose manual sync for button
+async function manualSyncNow(){
+  if (!navigator.onLine) { alert('You are offline. Connect to network and try again.'); return; }
+  showMessage('Syncing queued entries...');
+  // run flushUntilEmpty but guard loops
+  const MAX_RUNS = 8;
+  for (let i=0;i<MAX_RUNS;i++){
+    await flushOnce();
+    const remaining = getQueue().length;
+    if (!remaining) break;
+    // small delay to let server settle
+    await new Promise(r=>setTimeout(r, 300));
+  }
+  const rem = getQueue().length;
+  if (rem === 0) showMessage('All queued entries synced.');
+  else showMessage('Sync attempted. Remaining: ' + rem);
+}
+
+// convenience alias used by HTML
+window.syncNow = manualSyncNow;
 
 // collect data from DOM
 function collectFormData(){
@@ -244,12 +339,33 @@ function makeSubmissionId() {
   return "s_" + Date.now() + "_" + Math.floor(Math.random()*1000000);
 }
 
+// Expose submitForm global so index.html's inline call works
+window.submitForm = async function() {
+  // call the same internal flow as click/touch handlers
+  const btn = document.getElementById('submitBtn');
+  if (btn) {
+    // trigger the click handler we attach below
+    btn.click();
+  } else {
+    // fallback: run flow
+    await doSubmitFlow();
+  }
+};
+
 // ---------- DOM bindings (safe for mobile) ----------
 document.addEventListener('DOMContentLoaded', function() {
   updateStatus();
+  startAutoFlush();
 
   const submitBtn = document.getElementById('submitBtn');
   const clearBtn = document.getElementById('clearBtn');
+  // new sync button
+  const syncBtn  = document.getElementById('syncBtn');
+
+  if (syncBtn) {
+    syncBtn.addEventListener('click', function(){ window.syncNow(); });
+    syncBtn.addEventListener('touchend', function(ev){ ev && ev.preventDefault(); window.syncNow(); }, { passive:false });
+  }
 
   if (!submitBtn) {
     console.warn('[INIT] submitBtn not found in DOM');
@@ -265,9 +381,11 @@ document.addEventListener('DOMContentLoaded', function() {
   async function doSubmitFlow() {
     try {
       // Basic client validation
-      var carReg = document.getElementById('carRegistrationNo').value.trim();
+      var carRegEl = document.getElementById('carRegistrationNo');
+      var carReg = carRegEl ? carRegEl.value.trim() : "";
       var servicesChecked = document.querySelectorAll('.service:checked');
-      var amount = document.getElementById('amountPaid').value.trim();
+      var amountEl = document.getElementById('amountPaid');
+      var amount = amountEl ? amountEl.value.trim() : "";
       var modeChecked = document.querySelectorAll('.mode:checked');
 
       if (carReg === "") { alert("Car registration number is required."); return; }
@@ -296,21 +414,21 @@ document.addEventListener('DOMContentLoaded', function() {
       // mark active so we don't double-send same id
       activeSubmissions.add(formData.submissionId);
 
-      // immediate visible feedback but short-lived
+      // immediate visible feedback
       submitBtn.disabled = true;
+      const origLabel = submitBtn.textContent;
       submitBtn.textContent = 'Saving...';
-      setTimeout(()=>{ submitBtn.textContent = 'Submit'; submitBtn.disabled = false; }, 700);
 
-      // clear UI immediately (user asked for this)
+      // clear UI immediately
       showMessage('Submitted — registering...');
       clearForm();
 
-      // background send (fire-and-forget style)
+      // background send
       (async function backgroundSend(localForm) {
         try {
           if (navigator.onLine) {
             // flush queued first (best-effort)
-            try { await flushQueue(); } catch(e){ console.warn('flushQueue err', e); }
+            try { await flushOnce(); } catch(e){ console.warn('flushOnce err', e); }
 
             // Try send current item
             try {
@@ -318,8 +436,7 @@ document.addEventListener('DOMContentLoaded', function() {
               const resp = await sendToServerJSONP(localForm, clientTs);
               if (resp && resp.success) {
                 showMessage('Saved — Serial: ' + resp.serial);
-                // ensure item is not in queue (sometimes user retried earlier)
-                // remove any queued items with same id
+                // ensure item is not in queue (cleanup)
                 try {
                   let q = getQueue();
                   q = q.filter(it => !(it && it.id === localForm.submissionId));
@@ -342,7 +459,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             // attempt another flush (best-effort)
-            try { await flushQueue(); } catch(e){}
+            try { await flushOnce(); } catch(e){}
           } else {
             // offline -> queue locally
             queueSubmission(localForm);
@@ -355,6 +472,9 @@ document.addEventListener('DOMContentLoaded', function() {
         } finally {
           // done processing this id
           try { activeSubmissions.delete(localForm.submissionId); } catch(e){}
+          // restore button label
+          try { submitBtn.disabled = false; submitBtn.textContent = origLabel || 'Submit'; } catch(e){}
+          updateStatus();
         }
       })(formData);
 
@@ -405,8 +525,3 @@ document.addEventListener('DOMContentLoaded', function() {
   }, 300);
 
 }); // DOMContentLoaded end
-
-
-
-
-
