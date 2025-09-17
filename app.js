@@ -1,5 +1,4 @@
-// app.js - improved mobile-friendly client with JSONP queue, background send, manual sync, concurrency
-// IMPORTANT: set ENDPOINT to your Apps Script web app URL and SHARED_TOKEN to the secret above
+// app.js (updated flush logic — keep rest of your original file as-is)
 const ENDPOINT = "https://script.google.com/macros/s/AKfycbwyBqXdqrjtPUmkJETwPzTN6nCfc0J7xhiDVPdDAv61bKzoZk0JAK3Tqfm-5pl4VvC_/exec";
 const SHARED_TOKEN = "shopSecret2025";
 const KEY_QUEUE = "car_entry_queue_v1";
@@ -199,48 +198,46 @@ async function flushOnce() {
   // mark active
   batch.forEach(it => activeSubmissions.add(it.id));
 
-  // send in parallel
-  const promises = batch.map(it => {
+  // For each batch item, create a promise that always resolves to an object with id + result.
+  // This guarantees Promise.all won't reject; we can map results reliably.
+  const mappedPromises = batch.map(it => {
     return sendToServerJSONP(it.data, it.ts)
       .then(resp => ({ id: it.id, success: !!(resp && resp.success), resp: resp }))
       .catch(err => ({ id: it.id, error: err }));
   });
 
-  const results = await Promise.allSettled(promises);
-  // process results
-  for (const p of results) {
-    if (p.status === 'fulfilled') {
-      const r = p.value;
+  // Wait for all mapped results (they resolve to objects even when send fails)
+  const results = await Promise.all(mappedPromises);
+
+  // Process each result and ensure we unmark active for that id
+  for (const r of results) {
+    const id = r && r.id;
+    try {
       if (r.success) {
-        // remove from queue
-        removeFromQueueById(r.id);
-        console.log('[FLUSH] success id=', r.id, r.resp);
-        // notify user briefly
+        // remove from queue only if server confirmed success
+        removeFromQueueById(id);
+        console.log('[FLUSH] success id=', id, r.resp);
         if (r.resp && r.resp.serial) showMessage('Saved — Serial: ' + r.resp.serial);
       } else {
-        // server-side returned validation error or unknown structure
+        // not a success — maybe server returned error or we had a network error
         if (r.resp && r.resp.error) {
-          // remove from queue (server rejected) and inform user
-          removeFromQueueById(r.id);
+          // Server rejected the entry (validation). Remove from queue and inform user.
+          removeFromQueueById(id);
           alert('Server rejected an offline entry and it was removed: ' + r.resp.error);
         } else {
-          // treat as temporary failure -> increment retryCount
-          incrementRetryCount(r.id);
-          console.warn('[FLUSH] response indicates failure, will retry later id=', r.id, r.resp);
+          // temporary failure -> increment retryCount and keep item in queue
+          console.warn('[FLUSH] temporary failure for id=', id, 'resp/error=', r.resp || r.error);
+          incrementRetryCount(id);
         }
       }
-    } else {
-      // promise rejected
-      const obj = p.reason || {};
-      if (obj && obj.id) {
-        incrementRetryCount(obj.id);
-      } else {
-        // can't map, just log
-        console.warn('[FLUSH] send failed (unmapped)', p.reason);
-      }
+    } catch (procErr) {
+      console.error('[FLUSH] processing error for id=' + id, procErr);
+      // do not remove queue item here — leave for retry
+      incrementRetryCount(id);
+    } finally {
+      // ensure active mark cleared
+      try { activeSubmissions.delete(id); } catch(e){}
     }
-    // unmark active for that id
-    try { activeSubmissions.delete(p.value && p.value.id ? p.value.id : (p.reason && p.reason.id ? p.reason.id : null)); } catch(e){}
   }
 
   updateStatus();
@@ -254,7 +251,7 @@ function incrementRetryCount(id){
       if (q[i].retryCount >= MAX_RETRY) {
         // stop auto retrying and alert user for manual action
         alert('An offline entry failed to sync after multiple attempts. You may inspect and re-submit. id=' + id);
-        // optionally keep it in queue for manual retry, or move it to a "dead" area — for now we keep it but don't auto-flush further until manual
+        // We keep it in queue (so the user can manually retry or inspect).
       }
       break;
     }
@@ -525,6 +522,3 @@ document.addEventListener('DOMContentLoaded', function() {
   }, 300);
 
 }); // DOMContentLoaded end
-
-
-
