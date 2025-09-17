@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Car Entry</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    html,body { height:100%; margin:0; padding:0; }
+    body {
+      background-image: url('./background.jpg');
+      background-size: cover;
+      background-position: center center;
+      background-repeat: no-repeat;
+      font-family: Arial, sans-serif;
+      display:flex;
+      align-items:flex-start;
+      justify-content:center;
+      padding:20px;
+      box-sizing:border-box;
+    }
+
+    .container {
+      width:100%;
+      max-width:520px;
+      background: rgba(255,255,255,0.92);
+      border-radius:10px;
+      padding:14px;
+      box-sizing:border-box;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+      position: relative; /* <-- needed so sheet-link can be placed top-right inside container */
+    }
+    /* Google Sheet link (top-right) */
+    .sheet-link {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: #2c7be5;
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 13px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+    }
+    .sheet-link:active,
+    .sheet-link:focus { outline: none; box-shadow: 0 0 0 3px rgba(44,123,229,0.18); }
+
+    h1{font-size:20px;margin:0 0 10px 0}
+    .q-label{display:block;margin-top:10px;font-weight:600}
+
+    input[type="text"], input[type="number"], select, textarea {
+      width:100%; padding:8px; font-size:15px; margin-top:6px; box-sizing:border-box;
+      border:1px solid #ccc; border-radius:4px;
+    }
+
+    .checkbox-row { display:block; margin-top:6px; padding:0; }
+    .checkbox-row .cb {
+      display:block !important;
+      width:100% !important;
+      padding:6px 0 !important;
+      margin:0 0 6px 0 !important;
+      box-sizing:border-box !important;
+      font-weight:normal;
+    }
+    .checkbox-row .cb input[type="checkbox"] {
+      transform: scale(1.5);
+      margin-right: 12px;
+      accent-color: #2c7be5;
+    }
+
+    button{
+      margin-top:12px;
+      padding:10px 14px;
+      font-size:16px;
+      border-radius:6px;
+      border: none;
+      background:#2c7be5;
+      color:white;
+      cursor:pointer;
+    }
+    button#clearBtn { background:#6c757d; }
+
+    #msg{margin-top:10px;color:green;font-weight:600}
+    .small{font-size:13px;color:#666;margin-top:6px}
+    .form-actions {
+      display:flex;
+      gap:8px;
+      align-items:center;
+      margin-top:12px;
+      flex-wrap:wrap;
+    }
+    @media (max-width:420px){
+      .form-actions {flex-direction:column; align-items:stretch}
+      .form-actions button {width:100%}
+    }
+
+    /* Hide Q4 by default */
+    #qtyWrapper { display:none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- top-right link to Google Sheet -->
+    <a class="sheet-link"
+       href="https://docs.google.com/spreadsheets/d/1RcW7oIyoafocW4cNFYLvh_su0I7zWhlvN__5PoQmf38/edit"
+       target="_blank" rel="noopener" aria-label="Open Google sheet">Google sheet</a>
+    <h1>Car Entry</h1>
+
+    <label class="q-label">1. Car registration no.</label>
+    <input id="carRegistrationNo" type="text" placeholder="e.g. MH12AB1234">
+
+    <label class="q-label">2. Car name</label>
+    <input id="carName" type="text" placeholder="e.g. Swift">
+
+    <label class="q-label">3. Services provided (check all that apply)</label>
+    <div class="checkbox-row" id="services">
+      <label class="cb"><input type="checkbox" value="Wheel Alignment" class="service"> Wheel Alignment</label>
+      <label class="cb"><input type="checkbox" value="Wheel Balancing" class="service"> Wheel Balancing</label>
+      <label class="cb"><input type="checkbox" value="Tires sold" class="service"> Tires sold</label>
+      <label class="cb"><input type="checkbox" value="Wheel Cover sold" class="service"> Wheel Cover sold</label>
+      <label class="cb"><input type="checkbox" value="Other" class="service"> Other</label>
+    </div>
+
+    <div id="qtyWrapper">
+      <label class="q-label">4. How many Tires/Wheel Cover sold?</label>
+      <input id="qtyTiresWheelCoverSold" type="number" min="0" step="1" placeholder="Enter quantity if sold">
+    </div>
+
+    <label class="q-label">5. Amount paid by customer (₹) <span style="color:red">*</span></label>
+    <input id="amountPaid" type="number" min="0" step="0.01" required>
+
+    <label class="q-label">6. Mode of Payment (check all that apply) <span style="color:red">*</span></label>
+    <div class="checkbox-row" id="modes">
+      <label class="cb"><input type="checkbox" value="Cash" class="mode"> Cash</label>
+      <label class="cb"><input type="checkbox" value="Online Payment J &amp; K Bank" class="mode"> Online Payment J &amp; K Bank</label>
+      <label class="cb"><input type="checkbox" value="Other" class="mode"> Other</label>
+    </div>
+
+    <label class="q-label">7. How many Kms vehicle has travelled?</label>
+    <input id="kmsTravelled" type="number" min="0" step="1">
+
+    <label class="q-label">8. Advice to customer</label>
+    <textarea id="adviceToCustomer" rows="2"></textarea>
+
+    <label class="q-label">9. Any Other Information</label>
+    <textarea id="otherInfo" rows="2"></textarea>
+
+    <div class="form-actions">
+      <button id="submitBtn" type="button">Submit</button>
+      <button id="clearBtn" type="button">Clear</button>
+      <div style="margin-left:auto;font-weight:600;"><span id="status">online</span></div>
+    </div>
+
+    <div id="msg" style="display:none"></div>
+    <div class="small" style="margin-top:6px">Status: <span id="status-duplicate" style="display:none"></span></div>
+  </div>
+
+  <script src="app.js"></script>
+  <script>
+    // Show/Hide Q4 based on services selected
+    const serviceCheckboxes = document.querySelectorAll('.service');
+    const qtyWrapper = document.getElementById('qtyWrapper');
+
+    serviceCheckboxes.forEach(cb => {
+      cb.addEventListener('change', () => {
+        const showQty = Array.from(serviceCheckboxes).some(el =>
+          el.checked && (el.value === "Tires sold" || el.value === "Wheel Cover sold")
+        );
+        qtyWrapper.style.display = showQty ? 'block' : 'none';
+      });
+    });
+
+    // Form validation before submit
+    document.getElementById('submitBtn').addEventListener('click', () => {
+      const amountPaid = document.getElementById('amountPaid').value.trim();
+      const paymentModes = document.querySelectorAll('.mode:checked');
+
+      if (!amountPaid) {
+        alert("Amount paid by customer is required.");
+        return;
+      }
+      if (paymentModes.length === 0) {
+        alert("Please select at least one mode of payment.");
+        return;
+      }
+
+      // If passes, call app.js submit logic
+      if (typeof submitForm === "function") {
+        submitForm();
+      }
+    });
+  </script>
+</body>
+</html>
