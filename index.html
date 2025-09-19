@@ -28,9 +28,8 @@
       padding:14px;
       box-sizing:border-box;
       box-shadow: 0 6px 18px rgba(0,0,0,0.15);
-      position: relative; /* <-- needed so sheet-link can be placed top-right inside container */
+      position: relative;
     }
-    /* Google Sheet link (top-right) */
     .sheet-link {
       position: absolute;
       top: 12px;
@@ -101,7 +100,6 @@
 </head>
 <body>
   <div class="container">
-    <!-- top-right link to Google Sheet -->
     <a class="sheet-link"
        href="https://docs.google.com/spreadsheets/d/1RcW7oIyoafocW4cNFYLvh_su0I7zWhlvN__5PoQmf38/edit"
        target="_blank" rel="noopener" aria-label="Open Google sheet">Google sheet</a>
@@ -146,7 +144,7 @@
     <label class="q-label">9. Any Other Information</label>
     <textarea id="otherInfo" rows="2"></textarea>
 
-       <div class="form-actions">
+    <div class="form-actions">
       <button id="submitBtn" type="button">Submit</button>
       <button id="clearBtn" type="button">Clear</button>
 
@@ -159,9 +157,8 @@
       </div>
     </div>
 
-
     <div id="msg" style="display:none"></div>
-    <div class="small" style="margin-top:6px">Status: <span id="status-duplicate" style="display:none"></span></div>
+    <div class="small" style="margin-top:6px">Status: <span id="status-duplicate" style="display:inline"></span></div>
   </div>
 
   <script src="app.js"></script>
@@ -201,4 +198,3 @@
   </script>
 </body>
 </html>
-
