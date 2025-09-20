@@ -1,5 +1,5 @@
 // app.js — offline-capable client (staging + local queue)
-const ENDPOINT = "https://script.google.com/macros/s/AKfycbxeszkzjOaL9XLDu51C5rQ8j7FicK37K9bb9E7Zf_Sng3RyOyPfGyibonlqi9SbXxaiYA/exec";
+const ENDPOINT = "https://script.google.com/macros/s/AKfycbxVc2-HwJl2A-3tLR6ZDC_9YNGena3ZJLhSUNixood7c81U8RR85IpohqecJsFvF35nWg/exec";
 const SHARED_TOKEN = "shopSecret2025";
 
 // Tunables
@@ -458,6 +458,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
 }); // DOMContentLoaded end
+
 
 
 
