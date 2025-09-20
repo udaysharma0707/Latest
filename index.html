@@ -8,6 +8,26 @@
   <meta http-equiv="Cache-control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
+  <!-- iOS / Apple integration for "Add to Home Screen" -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+<!-- Required Apple touch icons (iOS prefers these). Provide multiple sizes. -->
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-180.png">
+<link rel="apple-touch-icon" sizes="152x152" href="/icons/apple-touch-icon-152.png">
+<link rel="apple-touch-icon" sizes="120x120" href="/icons/apple-touch-icon-120.png">
+<link rel="apple-touch-icon" sizes="76x76"   href="/icons/apple-touch-icon-76.png">
+
+<!-- Android / general PWA manifest (keep it) -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#2c7be5">
+
+<!-- Safari pinned tab (optional monochrome SVG) -->
+<link rel="mask-icon" href="/icons/safari-pinned.svg" color="#2c7be5">
+
+<!-- Generic favicon as fallback -->
+<link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png">
+
   <style>
     html,body { height:100%; margin:0; padding:0; }
     body {
@@ -218,3 +238,4 @@
   </script>
 </body>
 </html>
+
