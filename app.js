@@ -1,5 +1,5 @@
 // Configuration
-const ENDPOINT = "https://script.google.com/macros/s/AKfycbxKTsc_9BANM6mHAZs6Wa98C7PwIIVJeLAuq8-xkHg93DuHP0acKMq-ZLolZj9UMIelRA/exec";
+const ENDPOINT = "https://script.google.com/macros/s/AKfycby9W_fCgzwax4IzqNnw-2dL3KHrcLRRgiHEn9jR7vS2HdRge71zkr0zjmc6wMizPODxJQ/exec";
 const SHARED_TOKEN = "shopSecret2025";
 
 // Tunables
@@ -360,5 +360,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // No offline queueing or flush attempts — offline entries are not supported.
 }); // DOMContentLoaded end
+
 
 
