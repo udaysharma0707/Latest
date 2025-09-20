@@ -4,7 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Car Entry</title>
-  <link rel="manifest" href="manifest.json">
+  <!-- prevent aggressive caching -->
+  <meta http-equiv="Cache-control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <style>
     html,body { height:100%; margin:0; padding:0; }
     body {
@@ -107,10 +110,10 @@
     <h1>Car Entry</h1>
 
     <label class="q-label">1. Car registration no.</label>
-    <input id="carRegistrationNo" type="text" placeholder="e.g. MH12AB1234">
+    <input id="carRegistrationNo" type="text" placeholder="e.g. MH12AB1234" autocomplete="off">
 
     <label class="q-label">2. Car name</label>
-    <input id="carName" type="text" placeholder="e.g. Swift">
+    <input id="carName" type="text" placeholder="e.g. Swift" autocomplete="off">
 
     <label class="q-label">3. Services provided (check all that apply)</label>
     <div class="checkbox-row" id="services">
@@ -163,37 +166,54 @@
 
   <script src="app.js"></script>
   <script>
-    // Show/Hide Q4 based on services selected
-    const serviceCheckboxes = document.querySelectorAll('.service');
-    const qtyWrapper = document.getElementById('qtyWrapper');
+    // Show/Hide Q4 based on services selected (delegated and robust)
+    function handleServiceChange() {
+      const serviceCheckboxes = document.querySelectorAll('.service');
+      const qtyWrapper = document.getElementById('qtyWrapper');
+      const showQty = Array.from(serviceCheckboxes).some(el =>
+        el.checked && (el.value === "Tires sold" || el.value === "Wheel Cover sold")
+      );
+      qtyWrapper.style.display = showQty ? 'block' : 'none';
+    }
 
-    serviceCheckboxes.forEach(cb => {
-      cb.addEventListener('change', () => {
-        const showQty = Array.from(serviceCheckboxes).some(el =>
-          el.checked && (el.value === "Tires sold" || el.value === "Wheel Cover sold")
-        );
-        qtyWrapper.style.display = showQty ? 'block' : 'none';
+    document.addEventListener('DOMContentLoaded', function() {
+      // Initial binding
+      document.querySelectorAll('.service').forEach(cb => cb.addEventListener('change', handleServiceChange));
+      handleServiceChange(); // initial state
+
+      // Prevent form submission by Enter inside inputs (avoid accidental submits)
+      Array.from(document.querySelectorAll('input, textarea')).forEach(el => {
+        el.addEventListener('keydown', function(e){
+          if (e.key === 'Enter' && (this.tagName.toLowerCase() === 'input')) {
+            e.preventDefault();
+          }
+        });
       });
-    });
 
-    // Form validation before submit
-    document.getElementById('submitBtn').addEventListener('click', () => {
-      const amountPaid = document.getElementById('amountPaid').value.trim();
-      const paymentModes = document.querySelectorAll('.mode:checked');
+      // Form validation before submit (light guard) — main logic is in app.js
+      document.getElementById('submitBtn').addEventListener('click', () => {
+        const amountPaid = document.getElementById('amountPaid').value.trim();
+        const paymentModes = document.querySelectorAll('.mode:checked');
 
-      if (!amountPaid) {
-        alert("Amount paid by customer is required.");
-        return;
-      }
-      if (paymentModes.length === 0) {
-        alert("Please select at least one mode of payment.");
-        return;
-      }
+        if (!amountPaid) {
+          alert("Amount paid by customer is required.");
+          return;
+        }
+        if (paymentModes.length === 0) {
+          alert("Please select at least one mode of payment.");
+          return;
+        }
 
-      // If passes, call app.js submit logic
-      if (typeof submitForm === "function") {
-        submitForm();
-      }
+        // If passes, call app.js submit logic
+        if (typeof submitForm === "function") {
+          submitForm();
+        }
+      });
+
+      // Clear button wiring (backup)
+      const clearBtn = document.getElementById('clearBtn');
+      if (clearBtn) clearBtn.addEventListener('click', function(){ if (typeof clearForm === 'function') { clearForm(); showMessage('Form cleared'); } });
+
     });
   </script>
 </body>
