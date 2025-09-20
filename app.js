@@ -1,10 +1,9 @@
-// app.js — offline-capable client (staging + local queue)
+// Configuration
 const ENDPOINT = "https://script.google.com/macros/s/AKfycbxVc2-HwJl2A-3tLR6ZDC_9YNGena3ZJLhSUNixood7c81U8RR85IpohqecJsFvF35nWg/exec";
 const SHARED_TOKEN = "shopSecret2025";
 
 // Tunables
 const JSONP_TIMEOUT_MS = 20000;   // JSONP timeout
-const QUEUE_KEY = 'carEntry_offlineQueue_v1';
 
 // runtime
 const activeSubmissions = new Set(); // submissionIds being processed
@@ -13,13 +12,26 @@ const activeSubmissions = new Set(); // submissionIds being processed
 function updateStatus() {
   const s = document.getElementById('status');
   const s2 = document.getElementById('status-duplicate');
+  const offlineNotice = document.getElementById('offlineNotice');
   const on = navigator.onLine;
   if (s) s.textContent = on ? 'online' : 'offline';
   if (s2) s2.textContent = on ? 'online' : 'offline';
   console.log('[STATUS]', on ? 'online' : 'offline');
-  showQueueCount();
+
+  // show persistent "Connect to internet" when offline and disable submit
+  const msg = document.getElementById('msg');
+  const submitBtn = document.getElementById('submitBtn');
+  if (!offlineNotice) return;
+  if (!on) {
+    offlineNotice.style.display = 'block';
+    if (msg) { msg.style.display = 'none'; }
+    try { if (submitBtn) submitBtn.disabled = true; } catch(e){}
+  } else {
+    offlineNotice.style.display = 'none';
+    try { if (submitBtn) submitBtn.disabled = false; } catch(e){}
+  }
 }
-window.addEventListener('online', ()=>{ updateStatus(); flushQueue(); });
+window.addEventListener('online', ()=>{ updateStatus(); /* do not queue or flush */ });
 window.addEventListener('offline', ()=>{ updateStatus(); });
 
 // Uppercase except services (do not touch services array)
@@ -96,7 +108,6 @@ function jsonpRequest(url, timeoutMs) {
 }
 
 // Build JSONP URL and call — includes both submissionId and clientId for server compatibility
-// opts: { staging: 1 } or { action: 'processStaging' }
 function sendToServerJSONP(formData, clientTs, opts) {
   var params = [];
   function add(k,v){ if (v === undefined || v === null) v=""; params.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(v))); }
@@ -132,110 +143,6 @@ function sendToServerJSONP(formData, clientTs, opts) {
   return jsonpRequest(url, JSONP_TIMEOUT_MS);
 }
 
-// ---------- offline queue utilities ----------
-function loadQueue(){
-  try {
-    var raw = localStorage.getItem(QUEUE_KEY);
-    if (!raw) return [];
-    var q = JSON.parse(raw);
-    if (!Array.isArray(q)) return [];
-    return q;
-  } catch (e) {
-    console.warn('loadQueue parse error', e);
-    return [];
-  }
-}
-function saveQueue(q){
-  try {
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(q || []));
-    showQueueCount();
-  } catch (e) {
-    console.warn('saveQueue err', e);
-  }
-}
-function enqueue(item){
-  var q = loadQueue();
-  q.push(item);
-  saveQueue(q);
-}
-function removeFromQueueById(submissionId){
-  var q = loadQueue();
-  var nq = q.filter(it => it.submissionId !== submissionId);
-  saveQueue(nq);
-}
-function showQueueCount(){
-  var el = document.getElementById('queueCount');
-  if (!el) return;
-  var q = loadQueue();
-  el.textContent = q.length;
-}
-
-// Flush queue: send items as staging=1 in stored order (oldest first).
-async function flushQueue(){
-  if (!navigator.onLine) { console.log('[FLUSH] offline — abort'); return; }
-  var q = loadQueue();
-  if (!q || q.length === 0) { showQueueCount(); return; }
-  console.log('[FLUSH] starting, items=', q.length);
-  // send sequentially to avoid overloading JSONP & preserve order
-  var stagedAny = false;
-  for (var i = 0; i < q.length; i++) {
-    var item = q[i];
-    if (!item || !item.submissionId) continue;
-    if (activeSubmissions.has(item.submissionId)) {
-      console.log('[FLUSH] skipping active submission', item.submissionId);
-      continue;
-    }
-    activeSubmissions.add(item.submissionId);
-    try {
-      const clientTs = item.clientTs || Date.now();
-      // send as staging so server appends to Staging sheet
-      const resp = await sendToServerJSONP(item, clientTs, { staging: 1 });
-      if (resp && resp.success && (resp.staged || resp.staged === true || resp.row)) {
-        // staged ok -> remove from queue
-        removeFromQueueById(item.submissionId);
-        stagedAny = true;
-        console.log('[FLUSH] staged', item.submissionId);
-      } else if (resp && resp.success && !resp.staged) {
-        // server processed directly — remove too
-        removeFromQueueById(item.submissionId);
-        console.log('[FLUSH] server accepted directly', item.submissionId);
-      } else {
-        console.warn('[FLUSH] server rejected staging for', item.submissionId, resp);
-        // don't delete; try next item
-      }
-    } catch (err) {
-      console.error('[FLUSH] send error for', item.submissionId, err);
-      // network error — stop further sends to avoid repeated failures
-      activeSubmissions.delete(item.submissionId);
-      break;
-    } finally {
-      activeSubmissions.delete(item.submissionId);
-    }
-    // small pause to be polite (avoid hitting script quotas)
-    await new Promise(r => setTimeout(r, 120));
-  }
-
-  // If anything was staged, trigger processing on server to move Staging->WebResponses
-  if (stagedAny) {
-    try {
-      console.log('[FLUSH] calling processStaging on server');
-      const procResp = await sendToServerJSONP({}, null, { action: 'processStaging' });
-      console.log('[FLUSH] processStaging resp', procResp);
-      if (procResp && procResp.success) {
-        showMessage('Queued items synced and processed.');
-      } else {
-        showMessage('Queued items staged but server did not confirm processing. You can press Sync Now again.');
-      }
-    } catch (procErr) {
-      console.error('[FLUSH] processStaging error', procErr);
-      showMessage('Queued items staged — processing on server failed. Try Sync Now again.');
-    }
-  } else {
-    showMessage('No queued items were sent (maybe still offline or server rejected).');
-  }
-  showQueueCount();
-}
-
 // collect data from DOM
 function collectFormData(){
   var services = Array.from(document.querySelectorAll('.service:checked')).map(i=>i.value);
@@ -257,7 +164,8 @@ function showMessage(text){
   var m = document.getElementById('msg');
   if (!m) { console.log('[UI]', text); return; }
   m.textContent = text; m.style.display='block';
-  setTimeout(()=>{ if (m) m.style.display='none'; }, 4000);
+  // auto-hide only when online and message isn't the offline notice
+  setTimeout(()=>{ if (m && navigator.onLine) m.style.display='none'; }, 4000);
 }
 function clearForm(){
   try {
@@ -285,22 +193,17 @@ window.submitForm = async function() {
   else await doSubmitFlow();
 };
 
-// ---------- DOM bindings (offline-capable) ----------
+// ---------- DOM bindings (no offline queueing) ----------
 document.addEventListener('DOMContentLoaded', function() {
   updateStatus();
-  showQueueCount();
 
   const submitBtn = document.getElementById('submitBtn');
   const clearBtn = document.getElementById('clearBtn');
   const syncBtn  = document.getElementById('syncBtn');
 
-  // ensure sync button visible (we support manual sync now)
+  // Hide/disable Sync button if present
   if (syncBtn) {
-    syncBtn.style.display = 'inline-block';
-    syncBtn.addEventListener('click', function(){
-      if (!navigator.onLine) { alert('You are offline — connect to internet to sync.'); return; }
-      flushQueue();
-    }, { passive: true });
+    try { syncBtn.style.display = 'none'; } catch(e){}
   }
 
   if (!submitBtn) {
@@ -316,6 +219,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function doSubmitFlow() {
     try {
+      // If offline, block submission and inform user
+      if (!navigator.onLine) {
+        alert('Connect to internet. Your entry cannot be saved while offline.');
+        return;
+      }
+
       // Basic client validation
       var carRegEl = document.getElementById('carRegistrationNo');
       var carReg = carRegEl ? carRegEl.value.trim() : "";
@@ -355,21 +264,9 @@ document.addEventListener('DOMContentLoaded', function() {
       const origLabel = submitBtn.textContent;
       submitBtn.textContent = 'Saving...';
 
-      // clear UI immediately (we will still retry or queue if needed)
+      // clear UI immediately
       showMessage('Submitting — please wait...');
       clearForm();
-
-      // If offline -> enqueue and return
-      if (!navigator.onLine) {
-        const queuedItem = Object.assign({}, formData, { clientTs: Date.now() });
-        enqueue(queuedItem);
-        showMessage('Saved offline — will sync when online.');
-        activeSubmissions.delete(formData.submissionId);
-        submitBtn.disabled = false;
-        submitBtn.textContent = origLabel || 'Submit';
-        updateStatus();
-        return;
-      }
 
       // background send (online)
       (async function backgroundSend(localForm) {
@@ -388,10 +285,9 @@ document.addEventListener('DOMContentLoaded', function() {
               alert('Unexpected server response. Please retry while online.');
             }
           } catch (errSend) {
-            // network/JSONP error -> fallback to queue (so it won't be lost)
-            console.error('send failed; falling back to queue', errSend);
-            enqueue(Object.assign({}, localForm, { clientTs: Date.now() }));
-            showMessage('Submission queued (offline or network issue). Will sync when online.');
+            // network/JSONP error -> report to user (do NOT queue)
+            console.error('send failed; not queuing (offline not allowed)', errSend);
+            alert('Network error occurred. Please ensure you are online and try again.');
           }
 
         } catch (bgErr) {
@@ -437,30 +333,21 @@ document.addEventListener('DOMContentLoaded', function() {
     clearBtn.addEventListener('click', function(ev){ clearForm(); showMessage('Form cleared'); }, { passive:false });
   }
 
-  // quick overlay check (helpful when mobile layouts accidentally cover button)
-  setTimeout(function(){
+  // unregister any existing service workers so cached SW can't re-enable offline writes
+  if ('serviceWorker' in navigator) {
     try {
-      var rect = submitBtn.getBoundingClientRect();
-      var midX = rect.left + rect.width/2;
-      var midY = rect.top + rect.height/2;
-      var el = document.elementFromPoint(midX, midY);
-      if (el && el !== submitBtn && !submitBtn.contains(el)) {
-        console.warn('[APP] submit button may be overlapped by', el);
-      } else {
-        console.log('[APP] submit button reachable');
-      }
-    } catch(e){}
-  }, 300);
-
-  // Try an initial flush if we're online and have queued items
-  if (navigator.onLine) {
-    setTimeout(()=>{ flushQueue(); }, 800);
+      navigator.serviceWorker.getRegistrations().then(function(regs){
+        regs.forEach(r => { r.unregister().catch(()=>{}); });
+      }).catch(()=>{});
+    } catch(e){ console.warn('sw unregister err', e); }
   }
 
+  // clear caches if available
+  if ('caches' in window) {
+    try {
+      caches.keys().then(keys => { keys.forEach(k => caches.delete(k)); }).catch(()=>{});
+    } catch(e){ console.warn('cache clear err', e); }
+  }
+
+  // No offline queueing or flush attempts — offline entries are not supported.
 }); // DOMContentLoaded end
-
-
-
-
-
-
