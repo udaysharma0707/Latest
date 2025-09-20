@@ -16,7 +16,6 @@ function updateStatus() {
   const on = navigator.onLine;
   if (s) s.textContent = on ? 'online' : 'offline';
   if (s2) s2.textContent = on ? 'online' : 'offline';
-  console.log('[STATUS]', on ? 'online' : 'offline');
 
   // show persistent "Connect to internet" when offline and disable submit
   const msg = document.getElementById('msg');
@@ -125,11 +124,12 @@ function sendToServerJSONP(formData, clientTs, opts) {
   add("carName", formData.carName || "");
   if (Array.isArray(formData.services)) add("services", formData.services.join(", "));
   else add("services", formData.services || "");
-  add("qtyTiresWheelCoverSold", formData.qtyTiresWheelCoverSold || "");
-  add("amountPaid", formData.amountPaid || "");
+  // Make sure numbers are sent as strings to avoid client-side coercion later
+  add("qtyTiresWheelCoverSold", formData.qtyTiresWheelCoverSold === undefined ? "" : String(formData.qtyTiresWheelCoverSold));
+  add("amountPaid", formData.amountPaid === undefined ? "" : String(formData.amountPaid));
   if (Array.isArray(formData.modeOfPayment)) add("modeOfPayment", formData.modeOfPayment.join(", "));
   else add("modeOfPayment", formData.modeOfPayment || "");
-  add("kmsTravelled", formData.kmsTravelled || "");
+  add("kmsTravelled", formData.kmsTravelled === undefined ? "" : String(formData.kmsTravelled));
   add("adviceToCustomer", formData.adviceToCustomer || "");
   add("otherInfo", formData.otherInfo || "");
   // include submissionId for server-side dedupe, also include clientId (server expects clientId)
@@ -178,6 +178,11 @@ function clearForm(){
     document.getElementById('kmsTravelled').value='';
     document.getElementById('adviceToCustomer').value='';
     document.getElementById('otherInfo').value='';
+    // hide qty if needed
+    const showQty = Array.from(document.querySelectorAll('.service')).some(el =>
+      el.checked && (el.value === "Tires sold" || el.value === "Wheel Cover sold")
+    );
+    document.getElementById('qtyWrapper').style.display = showQty ? 'block' : 'none';
   } catch(e){ console.warn('clearForm error', e); }
 }
 
@@ -199,11 +204,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
   const submitBtn = document.getElementById('submitBtn');
   const clearBtn = document.getElementById('clearBtn');
-  const syncBtn  = document.getElementById('syncBtn');
 
-  // Hide/disable Sync button if present
-  if (syncBtn) {
-    try { syncBtn.style.display = 'none'; } catch(e){}
+  // Hide/disable any leftover Sync button if present
+  const syncBtn  = document.getElementById('syncBtn');
+  if (syncBtn) { try { syncBtn.style.display = 'none'; } catch(e){} }
+
+  // disable submit immediately if offline
+  if (submitBtn && !navigator.onLine) {
+    try { submitBtn.disabled = true; } catch(e){}
   }
 
   if (!submitBtn) {
@@ -222,6 +230,7 @@ document.addEventListener('DOMContentLoaded', function() {
       // If offline, block submission and inform user
       if (!navigator.onLine) {
         alert('Connect to internet. Your entry cannot be saved while offline.');
+        updateStatus();
         return;
       }
 
